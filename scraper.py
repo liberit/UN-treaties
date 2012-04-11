@@ -29,7 +29,7 @@ sigre=re.compile(r'Signature',re.I)
 datere=re.compile(r'(Ratification|Accession|Succession|Acceptance)')
 countryre=re.compile(r'([^0-9]*)')
 
-import urllib2, cookielib, time, sys
+import urllib2, cookielib, time, sys, json
 from lxml.html.soupparser import parse
 from lxml.etree import tostring
 opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookielib.CookieJar()))
@@ -54,16 +54,22 @@ def fetch(url, retries=5, ignore=[], params=None):
             raise
     return parse(f)
 
+def dateJSONhandler(obj):
+    if hasattr(obj, 'isoformat'):
+        return unicode(obj.isoformat())
+    else:
+        raise TypeError, 'Object of type %s with value of %s is not JSON serializable' % (type(obj), repr(obj))
+
+def jdump(d):
+    # simple json dumper default for saver
+    return json.dumps(d, indent=1, default=dateJSONhandler, ensure_ascii=False)
+
 def unws(txt):
     return u' '.join(txt.split())
 
 def toText(node):
     if node is None: return ''
-    text=''.join([x.strip() for x in node.xpath(".//text()") if x.strip()]).replace(u"\u00A0",' ').strip()
-
-    links=node.xpath('a')
-    if not links: return text
-    return (text, unicode(urljoin(base,links[0].get('href')),'utf8'))
+    return ''.join([x.strip() for x in node.xpath(".//text()") if x.strip()]).replace(u"\u00A0",' ').strip()
 
 def getFrag(url, path):
     #return lxml.html.fromstring(scraperwiki.scrape(url)).xpath(path)
@@ -81,12 +87,12 @@ def convertRow(cells, fields):
                 res[name]=unws(tmp[0])
             else:
                 res[name]=unws(tmp)
-    print res
+    #print res
     return res
 
 def toObj(header):
     res=[]
-    print ' | '.join([''.join(x.xpath('.//text()')) for x in header.xpath('.//td')])
+    #print ' | '.join([''.join(x.xpath('.//text()')) for x in header.xpath('.//td')])
     fields={ 'Country': 0}
     for i, field in list(enumerate([''.join(x.xpath('.//text()')) for x in header.xpath('.//td')]))[1:]:
         if sigre.search(field):
@@ -101,21 +107,44 @@ def toObj(header):
             res.append(value)
     return res
 
-for chap in getFrag(base, '//table[@id="ctl00_ContentPlaceHolder1_dgChapterList"]//tr'):
-    chapter=''.join(chap.xpath('.//span//text()'))
-    url=urljoin(base,chap.xpath('.//a')[0].get('href'))
-    print "chapter", chapter, url
-    for trty in getFrag(url, '//table[@id="ctl00_ContentPlaceHolder1_dgSubChapterList"]//tr'):
-        treaty=trty.xpath('.//a/text()')[0].split('  ')[0]
-        url=urljoin(base,trty.xpath('.//a')[0].get('href'))
-        print url
-        i=0
-        header=getFrag(url,'//table//tr[@class="tableHdr"]//*[starts-with(.,"Participant")]/ancestor::tr[1]')
-        if len(header)==0:
-            continue
-        for obj in toObj(header[0]):
-            obj['Chapter']=chapter
-            obj['Treaty']=treaty
-            #scraperwiki.sqlite.save(unique_keys=['Treaty', "Country"],  data=obj)
-            i+=1
-        print i, treaty, url
+def scrape():
+    for chap in getFrag(base, '//table[@id="ctl00_ContentPlaceHolder1_dgChapterList"]//tr'):
+        chapter=''.join(chap.xpath('.//span//text()'))
+        url=urljoin(base,chap.xpath('.//a')[0].get('href'))
+        print >>sys.stderr, "chapter", chapter, url
+        for trty in getFrag(url, '//table[@id="ctl00_ContentPlaceHolder1_dgSubChapterList"]//tr'):
+            treaty=trty.xpath('.//a/text()')[0].split('  ')[0]
+            tmp=treaty.split(u"\u00A0",1)
+            treaty=tmp[0].replace(u"\u00A0",' ').strip()
+            if len(tmp)>1:
+                city=tmp[1].replace(u"\u00A0",' ').strip()
+            else:
+                city=None
+            url=urljoin(base,trty.xpath('.//a')[0].get('href'))
+            print >>sys.stderr, 'treaty', treaty
+            print >>sys.stderr, url
+            i=0
+            header=getFrag(url,'//table//tr[@class="tableHdr"]//*[starts-with(.,"Participant")]/ancestor::tr[1]')
+            if len(header)==0:
+                continue
+            pdf=header[0].xpath('//img[@title="View PDF"]/..')[0].get('href')
+            if pdf:
+                pdf=urljoin(base,pdf)
+            for obj in toObj(header[0]):
+                obj['Chapter']=chapter
+                obj['Treaty']=treaty
+                if city:
+                    obj['City']=city
+                if pdf:
+                    obj['PDF']=pdf
+                #scraperwiki.sqlite.save(unique_keys=['Treaty', "Country"],  data=obj)
+                yield obj
+                i+=1
+            print >>sys.stderr, i
+
+
+print '['
+for obj in scrape():
+    print jdump(obj).encode('utf8'),','
+print ']'
+
